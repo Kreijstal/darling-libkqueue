@@ -90,6 +90,11 @@ struct knote {
         struct {
             nlink_t   nlink;  /* Used by vnode */
             off_t     size;   /* Used by vnode */
+            mode_t    mode;   /* Used by vnode */
+            uid_t     uid;    /* Used by vnode */
+            gid_t     gid;    /* Used by vnode */
+            time_t    mtime_sec;  /* Used by vnode */
+            long      mtime_nsec; /* Used by vnode */
         } vnode;
         timer_t       timerid;  
         struct sleepreq *sleepreq; /* Used by posix/timer.c */
@@ -161,6 +166,7 @@ struct kqueue {
 #endif
     RB_ENTRY(kqueue) entries;
     LIST_HEAD(knt2free, knote) kq_tofree;
+    unsigned int    kq_waiters; /* threads in kevent_wait(); protected by kq_mtx */
 };
 
 struct kqueue_vtable {
@@ -183,6 +189,9 @@ struct kqueue_vtable {
     int  (*eventfd_raise)(struct eventfd *);
     int  (*eventfd_lower)(struct eventfd *);
     int  (*eventfd_descriptor)(struct eventfd *);
+    // Called in a fork child before the inherited kqueue is freed.
+    // Optional (may be NULL).
+    void (*kqueue_atfork)(struct kqueue *);
 };
 extern const struct kqueue_vtable kqops;
 
@@ -197,16 +206,17 @@ int kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src);
 /*
  * knote internal API
  */
-struct knote * knote_lookup(struct filter *, uintptr_t);
+struct knote * knote_lookup(struct filter *, const struct kevent64_s *);
 //DEADWOOD: struct knote * knote_get_by_data(struct filter *filt, intptr_t);
 struct knote * knote_new(void);
 #define knote_retain(kn) atomic_inc(&kn->kn_ref)
 void knote_release(struct knote *);
 void knote_insert(struct filter *, struct knote *);
 int  knote_delete(struct filter *, struct knote *);
-void knote_delete_all(struct filter *);
+void knote_delete_ident(struct filter *, uintptr_t);
 int  knote_init(void);
 int  knote_disable(struct filter *, struct knote *);
+void knote_delete_all(struct filter *);
 #define knote_get_filter(knt) &((knt)->kn_kq->kq_filt[(knt)->kev.filter])
 
 int         filter_lookup(struct filter **, struct kqueue *, short);

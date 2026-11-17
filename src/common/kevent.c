@@ -127,7 +127,7 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
 
     dbg_printf("src=%s", kevent_dump(src));
 
-    kn = knote_lookup(filt, src->ident);
+    kn = knote_lookup(filt, src);
     dbg_printf("knote_lookup: ident %d == %p", (int)src->ident, kn);
     if (kn == NULL) {
         if (src->flags & EV_ADD) {
@@ -168,6 +168,22 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
             errno = ENOENT;
             return (-1);
         }
+    }
+
+    /*
+     * EV_DELETE together with EV_DISPATCH2 on a disabled EV_DISPATCH2
+     * knote (typically one that has just been delivered) defers the
+     * deletion until the knote is enabled again, and reports EINPROGRESS
+     * (see EV_DISPATCH2 in <sys/event.h>). The owner of the udata may only
+     * reclaim it once the deletion has completed.
+     */
+    if ((src->flags & EV_DELETE) && !(src->flags & EV_ENABLE) &&
+            (src->flags & EV_DISPATCH2) == EV_DISPATCH2 &&
+            (kn->kev.flags & EV_DISPATCH2) == EV_DISPATCH2 &&
+            (kn->kev.flags & EV_DISABLE)) {
+        kn->kn_flags |= KNFL_DEFER_DELETE;
+        errno = EINPROGRESS;
+        return (-1);
     }
 
     if ((src->flags & EV_DELETE) || ((kn->kn_flags & KNFL_DEFER_DELETE) && (src->flags & EV_ENABLE))) {
@@ -370,7 +386,7 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
     kq = kqueue_lookup(kqfd);
     if (kq == NULL) {
         pthread_mutex_unlock(&kq_mtx);
-        errno = ENOENT;
+        errno = EBADF;
         return (-1);
     }
 
@@ -384,18 +400,6 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
         dbg_printf("--- kevent %u --- (nchanges = %d, nevents = %d)", myid, nchanges, nevents);
     }
 #endif
-
-#ifdef DARLING_DEBUG
-extern void KQ_DLOG(const char* format, ...);
-#define KQ_DLOG(...) KQ_DLOG(__VA_ARGS__)
-#else
-#define KQ_DLOG(...) ((void)0)
-#endif
-
-    KQ_DLOG("libkqueue: kevent64_impl ENTER kqfd=%d nchanges=%d nevents=%d\n", kqfd, nchanges, nevents);
-    if (!kq) {
-        KQ_DLOG("libkqueue: kevent64_impl kq==NULL\n");
-    }
 
     /*
      * Process each kevent on the changelist.
@@ -428,16 +432,22 @@ extern void KQ_DLOG(const char* format, ...);
     if ((flags & KEVENT_FLAG_ERROR_EVENTS) == 0 && nevents > 0) {
         const struct timespec* ts = (flags & KEVENT_FLAG_IMMEDIATE) ? (&timeout_zero) : timeout;
 again:
-        KQ_DLOG("libkqueue: calling kqops.kevent_wait kq=%p nevents=%d\n", (void*)kq, nevents);
+        /*
+         * The events returned by kevent_wait() point at knotes. Another
+         * thread may delete one of them before we copy it out, so knotes
+         * queued for freeing are only reclaimed once no thread is waiting.
+         */
+        kqueue_lock(kq);
+        kq->kq_waiters++;
+        kqueue_unlock(kq);
+
         rv = kqops.kevent_wait(kq, nevents, ts);
-        KQ_DLOG("libkqueue: kqops.kevent_wait returned %d\n", rv);
         dbg_printf("kqops.kevent_wait returned %d", rv);
 
         kqueue_lock(kq);
+        kq->kq_waiters--;
         if (fastpath(rv > 0)) {
-            KQ_DLOG("libkqueue: calling kqops.kevent_copyout rv=%d\n", rv);
             rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
-            KQ_DLOG("libkqueue: kqops.kevent_copyout returned %d\n", rv);
             ret += rv;
         }
 

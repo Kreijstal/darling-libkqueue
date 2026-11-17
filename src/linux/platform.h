@@ -72,16 +72,14 @@ extern long int syscall (long int __sysno, ...);
     union { \
         char kn_extra_buffer[64]; /* Extra data buffer used by some filters (EVFILT_MACHPORT) */ \
     }; \
-    uint64_t kn_canary; /* DEBUG: detects overflow of kn_extra_buffer by the dserver */ \
     union { \
         int kn_timerfd; \
         int kn_signalfd; \
         int kn_inotifyfd; \
         int kn_eventfd; \
         int kn_dupfd; \
-    } kdata
-
-#define KN_CANARY_MAGIC 0xCAFED00DBEEF1234ULL
+    } kdata; \
+    int kn_sigeventfd; /* EVFILT_SIGNAL: counts signals taken by a handler */
 
 /*
  * Additional members of struct kqueue
@@ -95,6 +93,7 @@ int linux_fd_knote_delete(struct knote *);
 
 int     linux_kqueue_init(struct kqueue *);
 void    linux_kqueue_free(struct kqueue *);
+void    linux_kqueue_atfork(struct kqueue *);
 
 int     linux_kevent_wait(struct kqueue *, int, const struct timespec *);
 int     linux_kevent_copyout(struct kqueue *, int, struct kevent64_s *, int);

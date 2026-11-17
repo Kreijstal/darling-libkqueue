@@ -25,12 +25,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <darling/emulation/linux_premigration/ext/for-libkqueue.h>
-
-/*
- * kqchan fds are Darwin file descriptors managed by darwinkernel, which
- * translates them to the real underlying Linux socket fd. Use the emulated
- * recv()/send()/recvmsg() (routed through darwinkernel), NOT raw syscalls.
- */
 #include <darlingserver/rpc-supplement.h>
 
 #include "private.h"
@@ -272,10 +266,10 @@ int
 evfilt_proc_knote_delete(struct filter *filt, struct knote *kn)
 {
     if ((kn->kev.flags & EV_DISABLE) == 0) {
-        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
+        /* The channel is closed even if its epoll entry is already
+         * gone; the knote is freed regardless of the result. */
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0)
             dbg_perror("epoll_ctl(2)");
-            return (-1);
-        }
     }
 
 	(void) __close_for_kqueue(kn->kdata.kn_dupfd);
